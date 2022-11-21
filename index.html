@@ -1,0 +1,579 @@
+<link href="https://fonts.googleapis.com/css?family=Press+Start+2P" rel="stylesheet">
+<style>
+	* {
+		font-family: 'Press Start 2P', cursive;
+		line-height: 3.5;
+	}
+	body {
+		overflow: hidden;
+	}
+	#next {
+		margin-top:20px;
+	}
+
+	.grid {
+		transform: scale(.5);
+		transform-origin: 0 0;
+		display: grid;
+		grid-template-columns: 320px 200px;
+	}
+	
+	.right-column {
+		display: flex;
+		flex-direction: column;
+		justify-content: space-between;
+	}
+	
+	.game-board {
+		border: solid 2px;
+	}
+	
+	.play-button {
+		background-color: #4caf50;
+		font-size: 16px;
+		padding: 15px 30px;
+		cursor: pointer;
+	}
+</style>
+
+<div class="grid">
+	<canvas id="board" class="game-board"></canvas>
+	<div class="right-column">
+		<div>
+			<h1>TETRIS</h1><br>
+			<p>Hi Score: <span id="hiscore">0</span></p>
+			<p>Score: <span id="score">0</span></p>
+			<p>Lines: <span id="lines">0</span></p>
+			<p>Level: <span id="level">0</span></p>
+			<canvas id="next" class="next"></canvas>
+		</div>
+		<button onclick="play()" class="play-button">Play</button>
+	</div>
+</div>
+
+<script>
+	const COLS = 10;
+	const ROWS = 20;
+	const BLOCK_SIZE = 30;
+	const LINES_PER_LEVEL = 10;
+	const COLORS = [
+		'none',
+		'cyan',
+		'blue',
+		'orange',
+		'yellow',
+		'green',
+		'purple',
+		'red'
+	];
+	Object.freeze(COLORS);
+	
+	const SHAPES = [
+		[],
+		[
+			[0, 0, 0, 0],
+			[1, 1, 1, 1],
+			[0, 0, 0, 0],
+			[0, 0, 0, 0]
+		],
+		[
+			[2, 0, 0],
+			[2, 2, 2],
+			[0, 0, 0]
+		],
+		[
+			[0, 0, 3],
+			[3, 3, 3],
+			[0, 0, 0]
+		],
+		[
+			[4, 4],
+			[4, 4]
+		],
+		[
+			[0, 5, 5],
+			[5, 5, 0],
+			[0, 0, 0]
+		],
+		[
+			[0, 6, 0],
+			[6, 6, 6],
+			[0, 0, 0]
+		],
+		[
+			[7, 7, 0],
+			[0, 7, 7],
+			[0, 0, 0]
+		]
+	];
+	Object.freeze(SHAPES);
+	
+	const KEY = {
+		ESC: 27,
+		SPACE: 32,
+		LEFT: 37,
+		UP: 38,
+		RIGHT: 39,
+		DOWN: 40,
+		P: 80,
+		A: 65,
+		S: 83,
+		D: 68,
+		W: 87,
+		Z: 90,
+		X: 88
+	}
+	Object.freeze(KEY);
+	
+	const POINTS = {
+		SINGLE: 100,
+		DOUBLE: 300,
+		TRIPLE: 500,
+		TETRIS: 800,
+		SOFT_DROP: 1,
+		HARD_DROP: 2,
+	}
+	Object.freeze(POINTS);
+	
+	const LEVEL = {
+		0: 800,
+		1: 720,
+		2: 630,
+		3: 550,
+		4: 470,
+		5: 380,
+		6: 300,
+		7: 220,
+		8: 130,
+		9: 100,
+		10: 80,
+		11: 80,
+		12: 80,
+		13: 70,
+		14: 70,
+		15: 70,
+		16: 50,
+		17: 50,
+		18: 50,
+		19: 30,
+		20: 30,
+		// 29+ is 20ms
+	}
+	Object.freeze(LEVEL);
+	
+	// board
+	class Board {
+		ctx;
+		ctxNext;
+		grid;
+		piece;
+		next;
+		requestId;
+		time;
+	
+		constructor(ctx, ctxNext) {
+			this.ctx = ctx;
+			this.ctxNext = ctxNext;
+			this.init();
+		}
+	
+		init() {
+			// Calculate size of canvas from constants.
+			this.ctx.canvas.width = COLS * BLOCK_SIZE;
+			this.ctx.canvas.height = ROWS * BLOCK_SIZE;
+	
+			// Scale so we don't need to give size on every draw.
+			this.ctx.scale(BLOCK_SIZE, BLOCK_SIZE);
+		}
+	
+		reset() {
+			this.grid = this.getEmptyGrid();
+			this.piece = new Piece(this.ctx);
+			this.piece.setStartingPosition();
+			this.getNewPiece();
+		}
+	
+		getNewPiece() {
+			this.next = new Piece(this.ctxNext);
+			this.ctxNext.clearRect(
+				0,
+				0,
+				this.ctxNext.canvas.width,
+				this.ctxNext.canvas.height
+			);
+			this.next.draw();
+		}
+	
+		draw() {
+			this.piece.draw();
+			this.drawBoard();
+		}
+	
+		drop() {
+			let p = moves[KEY.DOWN](this.piece);
+			if (this.valid(p)) {
+				this.piece.move(p);
+			} else {
+				this.freeze();
+				this.clearLines();
+				if (this.piece.y === 0) {
+					// Game over
+					return false;
+				}
+				this.piece = this.next;
+				this.piece.ctx = this.ctx;
+				this.piece.setStartingPosition();
+				this.getNewPiece();
+			}
+			return true;
+		}
+	
+		clearLines() {
+			let lines = 0;
+	
+			this.grid.forEach((row, y) => {
+	
+				// If every value is greater than 0.
+				if (row.every(value => value > 0)) {
+					lines++;
+	
+					// Remove the row.
+					this.grid.splice(y, 1);
+	
+					// Add zero filled row at the top.
+					this.grid.unshift(Array(COLS).fill(0));
+				}
+			});
+	
+			if (lines > 0) {
+				// Calculate points from cleared lines and level.
+	
+				account.score += this.getLinesClearedPoints(lines);
+				account.lines += lines;
+	
+				// If we have reached the lines for next level
+				if (account.lines >= LINES_PER_LEVEL) {
+					// Goto next level
+					account.level++;
+	
+					// Remove lines so we start working for the next level
+					account.lines -= LINES_PER_LEVEL;
+	
+					// Increase speed of game
+					time.level = LEVEL[account.level];
+				}
+			}
+		}
+	
+		valid(p) {
+			return p.shape.every((row, dy) => {
+				return row.every((value, dx) => {
+					let x = p.x + dx;
+					let y = p.y + dy;
+					return (
+						value === 0 ||
+						(this.insideWalls(x) && this.aboveFloor(y) && this.notOccupied(x, y))
+					);
+				});
+			});
+		}
+	
+		freeze() {
+			this.piece.shape.forEach((row, y) => {
+				row.forEach((value, x) => {
+					if (value > 0) {
+						this.grid[y + this.piece.y][x + this.piece.x] = value;
+					}
+				});
+			});
+		}
+
+		getGrd( c, x, y ) {
+			//let grd = ctx.createLinearGradient(x, y, x+2, y+2);
+			let grd = ctx.createRadialGradient(x, y, 1, x+2, y+2, .2);
+			
+			grd.addColorStop(0, c);
+			grd.addColorStop(1, "white");
+			return grd;
+		}
+	
+		drawBoard() {
+			this.grid.forEach((row, y) => {
+				row.forEach((value, x) => {
+					if (value > 0) {
+						this.ctx.fillStyle = this.getGrd( COLORS[value], x, y );
+						this.ctx.fillRect(x, y, 1, 1);
+					}
+				});
+			});
+		}
+	
+		getEmptyGrid() {
+			return Array.from({
+				length: ROWS
+			}, () => Array(COLS).fill(0));
+		}
+	
+		insideWalls(x) {
+			return x >= 0 && x < COLS;
+		}
+	
+		aboveFloor(y) {
+			return y <= ROWS;
+		}
+	
+		notOccupied(x, y) {
+			return this.grid[y] && this.grid[y][x] === 0;
+		}
+	
+		rotate(piece) {
+			// Clone with JSON for immutability.
+			let p = JSON.parse(JSON.stringify(piece));
+	
+			// Transpose matrix
+			for (let y = 0; y < p.shape.length; ++y) {
+				for (let x = 0; x < y; ++x) {
+					[p.shape[x][y], p.shape[y][x]] = [p.shape[y][x], p.shape[x][y]];
+				}
+			}
+	
+			// Reverse the order of the columns.
+			p.shape.forEach(row => row.reverse());
+			return p;
+		}
+	
+		getLinesClearedPoints(lines, level) {
+			const lineClearPoints =
+				lines === 1 ?
+				POINTS.SINGLE :
+				lines === 2 ?
+				POINTS.DOUBLE :
+				lines === 3 ?
+				POINTS.TRIPLE :
+				lines === 4 ?
+				POINTS.TETRIS :
+				0;
+	
+			return (account.level + 1) * lineClearPoints;
+		}
+	}
+	
+	
+	// Piece
+	class Piece {
+		x;
+		y;
+		color;
+		shape;
+		ctx;
+		typeId;
+	
+		constructor(ctx) {
+			this.ctx = ctx;
+			this.spawn();
+		}
+	
+		spawn() {
+			this.typeId = this.randomizeTetrominoType(COLORS.length - 1);
+			this.shape = SHAPES[this.typeId];
+			this.color = COLORS[this.typeId];
+			this.x = 0;
+			this.y = 0;
+		}
+	
+		draw() {
+			this.shape.forEach((row, y) => {
+				row.forEach((value, x) => {
+					if (value > 0)
+					{
+						this.ctx.save()
+						this.ctx.fillStyle = board.getGrd( this.color, this.x + x, this.y + y );
+						this.ctx.fillRect(this.x + x, this.y + y, 1, 1);
+						this.ctx.restore()
+					}
+				});
+			});
+		}
+	
+		move(p) {
+			this.x = p.x;
+			this.y = p.y;
+			this.shape = p.shape;
+		}
+	
+		setStartingPosition() {
+			this.x = this.typeId === 4 ? 4 : 3;
+		}
+	
+		randomizeTetrominoType(noOfTypes) {
+			return Math.floor(Math.random() * noOfTypes + 1);
+		}
+	}
+	
+	// main
+	const canvas = document.getElementById('board');
+	const ctx = canvas.getContext('2d');
+	const canvasNext = document.getElementById('next');
+	const ctxNext = canvasNext.getContext('2d');
+	
+	let accountValues = {
+		score: 0,
+		level: 0,
+		lines: 0
+	}
+	
+	function updateAccount(key, value) {
+		let element = document.getElementById(key);
+		if (element)
+			element.textContent = value;
+	}
+	
+	let account = new Proxy(accountValues, {
+		set: (target, key, value) => {
+			target[key] = value;
+			updateAccount(key, value);
+			return true;
+		}
+	});
+	
+	let requestId;
+	
+	moves = {
+		[KEY.LEFT]: p => ({
+			...p,
+			x: p.x - 1
+		}),
+		[KEY.RIGHT]: p => ({
+			...p,
+			x: p.x + 1
+		}),
+		[KEY.DOWN]: p => ({
+			...p,
+			y: p.y + 1
+		}),
+		[KEY.SPACE]: p => ({
+			...p,
+			y: p.y + 1
+		}),
+		[KEY.UP]: p => board.rotate(p)
+	};
+	
+	let board = new Board(ctx, ctxNext);
+	addEventListener();
+	initNext();
+	
+	function initNext() {
+		// Calculate size of canvas from constants.
+		ctxNext.canvas.width = 4 * BLOCK_SIZE;
+		ctxNext.canvas.height = 4 * BLOCK_SIZE;
+		ctxNext.scale(BLOCK_SIZE, BLOCK_SIZE);
+	}
+	
+	function addEventListener() {
+		document.addEventListener('keydown', event => {
+			let k = event.keyCode
+			switch ( k ){
+				case KEY.S: k = KEY.DOWN; break;
+				case KEY.A: k = KEY.LEFT; break;
+				case KEY.D: k = KEY.RIGHT; break;
+				case KEY.W: k = KEY.UP; break;
+				case KEY.Z: k = KEY.UP; break;
+				case KEY.X: k = KEY.SPACE; break;
+			}
+
+			if (k === KEY.ESC) {
+				pause();
+				//gameOver();
+			} else if (moves[k]) {
+				event.preventDefault();
+				// Get new state
+				let p = moves[k](board.piece);
+				if (k === KEY.SPACE) {
+					// Hard drop
+					while (board.valid(p)) {
+						account.score += POINTS.HARD_DROP;
+						board.piece.move(p);
+						p = moves[KEY.DOWN](board.piece);
+					}
+				} else if (board.valid(p)) {
+					board.piece.move(p);
+					if (k === KEY.DOWN) {
+						account.score += POINTS.SOFT_DROP;
+					}
+				}
+			}
+		});
+	}
+	
+	function resetGame() {
+		updateHiScore()
+		account.score = 0;
+		account.lines = 0;
+		account.level = 0;
+		board.reset();
+		time = {
+			start: 0,
+			elapsed: 0,
+			level: LEVEL[account.level]
+		};
+	}
+	
+	function play() {
+		sq('.play-button').get(0).blur()
+		resetGame();
+		time.start = performance.now();
+		// If we have an old game running a game then cancel the old
+		if (requestId)
+			cancelAnimationFrame(requestId);
+	
+		animate();
+	}
+	
+	function animate(now = 0) {
+		time.elapsed = now - time.start;
+		if (time.elapsed > time.level) {
+			time.start = now;
+			if (!board.drop()) {
+				gameOver();
+				return;
+			}
+		}
+	
+		// Clear board before drawing new state.
+		ctx.clearRect(0, 0, ctx.canvas.width, ctx.canvas.height);
+	
+		board.draw();
+		requestId = requestAnimationFrame(animate);
+	}
+	
+	function updateHiScore(){
+		if ( parseInt(sq('#hiscore').text()) < account.score )
+			sq('#hiscore').text(account.score)
+	}
+
+	function gameOver() {
+		updateHiScore()
+		cancelAnimationFrame(requestId);
+		ctx.fillStyle = 'black';
+		ctx.fillRect(1, 3, 8, 1.2);
+		ctx.font = '1px Arial';
+		ctx.fillStyle = 'red';
+		ctx.fillText('GAME OVER', 1.8, 4);
+	}
+	
+	function pause() {
+		if (!requestId) {
+			animate();
+			return;
+		}
+	
+		cancelAnimationFrame(requestId);
+		requestId = null;
+	
+		ctx.fillStyle = 'black';
+		ctx.fillRect(1, 3, 8, 1.2);
+		ctx.font = '1px Arial';
+		ctx.fillStyle = 'yellow';
+		ctx.fillText('PAUSED', 3, 4);
+	}
+</script>
